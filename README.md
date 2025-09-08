@@ -1,1 +1,1 @@
-Strong lensing in the browser
+Strong lensing SIS + shear
