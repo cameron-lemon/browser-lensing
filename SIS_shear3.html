@@ -714,7 +714,17 @@ function drawCriticalCurveOn(ctx, canvas){
     const [px2,py2]=worldToPix(gx2,gy2,canvas);
     ctx.moveTo(px1,py1); ctx.lineTo(px2,py2);
   }
-  ctx.stroke(); ctx.restore();
+  ctx.stroke(); 
+  
+  // --- draw a small plus sign at (0,0) ---
+  const [cx,cy] = worldToPix(0,0,canvas);
+  ctx.beginPath();
+  const r = 6;   // half-length of plus arms in px
+  ctx.moveTo(cx-r, cy); ctx.lineTo(cx+r, cy);
+  ctx.moveTo(cx, cy-r); ctx.lineTo(cx, cy+r);
+  ctx.stroke();
+
+  ctx.restore();
 }
 
 // Caustics (source plane): astroid + pseudocaustic
