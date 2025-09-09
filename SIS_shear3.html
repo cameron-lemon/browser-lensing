@@ -1406,42 +1406,83 @@ function parseConfigText(txt){
   return JSON.parse(s);
 
 }
-
-function numFromHdr(hdr, key){
+function strFromHdr(hdr, key){
   if (!hdr.has(key)) return undefined;
-  const raw = String(hdr.get(key)).split('/')[0].trim();
-  const n = Number(raw);
+  return String(hdr.get(key)).split('/')[0].trim();
+}
+function numFromHdr(hdr, key){
+  const s = strFromHdr(hdr, key);
+  const n = Number(s);
   return Number.isFinite(n) ? n : undefined;
 }
 
 function applyFITSWCS(hdr, W, H){
-  // Try to get pixel scale (arcsec/pixel). If missing, we'll infer later.
-  let scale_as;
-  const num = (k)=> hdr.has(k) ? Number(String(hdr.get(k)).split('/')[0].trim()) : undefined;
+  let scale_as = null;   // arcsec/pixel
+  let rot_rad  = 0;
 
-  const CD11=num('CD1_1'), CD12=num('CD1_2'), CD21=num('CD2_1'), CD22=num('CD2_2');
-  if ([CD11,CD12,CD21,CD22].every(v=>Number.isFinite(v))){
-    const sx = Math.hypot(CD11, CD21);
-    const sy = Math.hypot(CD12, CD22);
-    const s_deg = Math.sqrt(sx*sy);
-    if (s_deg>0) scale_as = s_deg * 3600;
-  } else {
-    const CDELT1=num('CDELT1'), CDELT2=num('CDELT2');
-    const s1 = Math.abs(CDELT1 ?? CDELT2 ?? 0);
-    const s2 = Math.abs(CDELT2 ?? CDELT1 ?? 0);
-    const s_deg = Math.sqrt(Math.max(1e-20, s1*s2));
-    if (s_deg>0) scale_as = s_deg * 3600;
-    // ignore CROTA2 on purpose
+  // 1) Try CD matrix directly
+  let CD11 = numFromHdr(hdr,'CD1_1');
+  let CD12 = numFromHdr(hdr,'CD1_2');
+  let CD21 = numFromHdr(hdr,'CD2_1');
+  let CD22 = numFromHdr(hdr,'CD2_2');
+
+  // 2) If no CD, synthesize it from PC and CDELT
+  if (![CD11,CD12,CD21,CD22].every(Number.isFinite)) {
+    const CDELT1 = numFromHdr(hdr,'CDELT1');
+    const CDELT2 = numFromHdr(hdr,'CDELT2');
+
+    // PC defaults: identity
+    const PC11 = numFromHdr(hdr,'PC1_1'); const PC12 = numFromHdr(hdr,'PC1_2');
+    const PC21 = numFromHdr(hdr,'PC2_1'); const PC22 = numFromHdr(hdr,'PC2_2');
+    const pc11 = Number.isFinite(PC11) ? PC11 : 1;
+    const pc12 = Number.isFinite(PC12) ? PC12 : 0;
+    const pc21 = Number.isFinite(PC21) ? PC21 : 0;
+    const pc22 = Number.isFinite(PC22) ? PC22 : 1;
+
+    if (Number.isFinite(CDELT1) && Number.isFinite(CDELT2)) {
+      // CD = diag(CDELT) · PC
+      CD11 = CDELT1*pc11; CD12 = CDELT1*pc12;
+      CD21 = CDELT2*pc21; CD22 = CDELT2*pc22;
+    }
   }
 
-  // Force image center and zero rotation
+  // Units (deg is FITS default unless explicitly arcsec)
+  const CUNIT1 = (strFromHdr(hdr,'CUNIT1') || '').toLowerCase();
+  const CUNIT2 = (strFromHdr(hdr,'CUNIT2') || '').toLowerCase();
+  const unitIsArcsec = CUNIT1.includes('arcsec') || CUNIT2.includes('arcsec');
+
+  // Compute pixel scale from CD columns (lengths of column vectors)
+  if ([CD11,CD12,CD21,CD22].every(Number.isFinite)) {
+    // sx, sy in "header units" per pixel
+    let sx = Math.hypot(CD11, CD21);
+    let sy = Math.hypot(CD12, CD22);
+    // Convert to arcsec/pix if needed
+    if (unitIsArcsec) {
+      scale_as = Math.sqrt(sx*sy);           // already arcsec/pix
+    } else {
+      scale_as = Math.sqrt(sx*sy) * 3600;    // deg/pix -> arcsec/pix
+    }
+    // rotation angle (optional, you’ve been forcing 0 anyway)
+    rot_rad = Math.atan2(CD21, CD22);
+  }
+
+  // Sanity check — if nonsense, ignore and infer from FoV
+  if (!Number.isFinite(scale_as) || scale_as <= 0 || scale_as > 50) {
+    scale_as = null;
+  }
+
+  // Your preference: center image and zero rotation for interactive alignment
   state.fits.cx = (W - 1) / 2;
   state.fits.cy = (H - 1) / 2;
-  state.fits.rot_rad = 0;
+  state.fits.rot_rad = 0; // or keep `rot_rad` if you want WCS rotation
 
-  state.fits.scale_as_per_pix = (Number.isFinite(scale_as) && scale_as > 0) ? scale_as : null;
-  if (fitsScaleLabel){
-    fitsScaleLabel.textContent = state.fits.scale_as_per_pix ? state.fits.scale_as_per_pix.toFixed(3) : '—';
+  // Fallback/infer scale so the long side spans the FoV
+  const inferred = (2 * FOV) / Math.max(W, H); // arcsec/pix
+  state.fits.scale_as_per_pix = scale_as ?? inferred;
+
+  if (fitsScaleLabel) {
+    const tag = scale_as ? 'hdr' : '∼';
+    fitsScaleLabel.textContent = `${state.fits.scale_as_per_pix.toFixed(3)}″/px (${tag})`;
   }
 }
 
